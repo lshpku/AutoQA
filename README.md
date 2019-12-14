@@ -1,2 +1,2 @@
 # AutoQA
-Hey buddy, have you been to the wrong door?
+唱戏给，雄起阿里郎！
