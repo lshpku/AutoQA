@@ -1,5 +1,7 @@
 import pkuseg
 import pickle
+from utils import char_dict
+import numpy as np
 
 seg = pkuseg.pkuseg()  # load the default model
 
@@ -49,12 +51,42 @@ def make_dict(items: list) -> list:
     return word_list
 
 
+def seg_chars(path):
+    with open(path, 'r') as f:
+        text = f.read()
+    items = []
+    question = ''
+    with open(path, 'r') as f:
+        while True:
+            line = f.readline()
+            if not line:
+                break
+            line = line.split('\t')
+            if question != line[0]:  # new question
+                question = line[0]
+                items.append((char_dict[question], [], []))
+                print('\r{}'.format(len(items)), end='')
+            if not line[1]:
+                continue
+            content = char_dict[line[1]]
+            if isinstance(content, int):  # BugFix: must be list
+                content = [content]
+            if int(line[2]):  # real answer
+                items[-1][1].append(content)
+            else:             # fake answer
+                items[-1][2].append(content)
+        print()
+    with open('seg_chars.pth', 'wb') as f:
+        pickle.dump(items, f)
 
+seg_chars('data/validation-set.data')
+
+'''
 items = train_seg('data/validation-set.data')
 
 with open('valid-seg.pth', 'wb') as f:
     pickle.dump(items, f)
-'''
+
 with open('train-seg.pth', 'rb') as f:
     items = pickle.load(f)
 

@@ -2,99 +2,173 @@ import torch
 import torch.nn as nn
 from torch import optim
 import torch.functional as F
-from model import EmbeddingRNN, Classifier
-from utils import WordDict, QADataset
+from torch.utils.data import DataLoader
+from model import SentenceEncoder, Classifier, Discriminator
+from utils import WordDict, QADataset, QACharDataset
+from utils import THUCDataset, char_dict
+import numpy as np
+from PIL import Image
+import random
+import time
 
 lr = 0.01
+betas = (0.5, 0.999)
+BATCH_SIZE = 4
+VEC_SIZE = 128
 
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
-criterion = nn.BCELoss()
+#dataset = THUCDataset()
+#dataset = QADataset('train-words.pth')
+dataset = QACharDataset('train-chars.pth')
+dictionary = char_dict
+#dictionary = WordDict('word-dict.txt')
+dataloader = DataLoader(dataset, batch_size=1, shuffle=True, num_workers=0)
+evaluate = QACharDataset('valid-chars.pth')
+evaluate = DataLoader(evaluate, batch_size=1, shuffle=True, num_workers=0)
 
-rnn = EmbeddingRNN(30000).to(device)
-clf = Classifier(64).to(device)
+print('dict_size:', len(dictionary))
+print('dataset_size:', len(dataset))
 
-dataset = QADataset('train-seg.pth')
-word_dict = WordDict('word-dict.txt')
+encd, clsf, disc = None, None, None
+encd_optim, clsf_optim, disc_optim = None, None, None
 
-rnn_optim = optim.SGD(rnn.parameters(), lr=lr)
-clf_optim = optim.SGD(clf.parameters(), lr=lr)
+LABEL = torch.LongTensor([0]).to(device)
+hidden = torch.zeros(1, 1, VEC_SIZE).to(device)
 
-REAL_LABEL = torch.ones(1).to(device)
-FAKE_LABEL = torch.zeros(1).to(device)
+
+def pretrain_epoch():
+    loss_t = 0
+    batch = []
+
+    for i, data in enumerate(dataloader):
+        data = (data[0].to(device), data[1].to(device))
+        batch.append(data)
+        if len(batch) < BATCH_SIZE:
+            continue
+
+        encd_optim.zero_grad()
+        clsf_optim.zero_grad()
+        loss = 0
+
+        for j in batch:
+            name, tag = j
+            tag = tag.view(-1)
+            result = clsf(encd(name, hidden))
+            loss += clsf.loss(result, tag)
+
+        loss.backward()
+        encd_optim.step()
+        clsf_optim.step()
+        loss_t += loss
+        batch.clear()
+
+        if i % 160 == 159:
+            print('{}\t{:.8f}\t{:.1f}%'.format(i+1, loss_t.item()/160,
+                                               (i+1)*100/len(dataloader)))
+            loss_t = 0
+
+
+def predict(limit=0):
+    loss_t = 0
+    limit = len(evaluate) if not limit else limit
+    all_right = 0
+
+    for i, data in enumerate(evaluate):
+        if i >= limit:
+            break
+        ques, real, fakes = data[0], data[1], data[2:]
+        ques = ques.to(device)
+        real = real.to(device)
+        with torch.no_grad():
+            ques = encd(ques, hidden)
+            results = [disc(ques, encd(real, hidden))]
+            for j in fakes:
+                j = j.to(device)
+                results.append(disc(ques, encd(j, hidden)))
+            results = torch.cat(results, 1)
+            loss = disc.loss(results, LABEL)
+        loss_t += loss
+        _, topk = results.topk(1)
+        if topk.item() == 0:
+            all_right += 1
+
+    with open('predict.txt', 'a') as f:
+        f.write('{}\t{}'.format(loss_t.item()/limit, all_right/limit))
 
 
 def train_epoch():
     loss_t = 0
-    item_c = 0
 
-    for i, data in enumerate(dataset):
-        question, reals, fakes = word_dict[data]
+    for i, data in enumerate(dataloader):
+        ques, real, fakes = data[0], data[1], data[2:]
 
-        real_loss = torch.zeros(1).to(device)
-        fake_loss = torch.zeros(1).to(device)
+        encd_optim.zero_grad()
+        disc_optim.zero_grad()
 
-        question = [word_dict.START] + question + [word_dict.END]
-        question = torch.LongTensor(question).to(device)
+        ques = ques.to(device)
+        ques = encd(ques, hidden)
 
-        hidden = torch.zeros(1, 1, 64).to(device)
-
-        for j in reals:
-            rnn_optim.zero_grad()
-            clf_optim.zero_grad()
-
-            qust = rnn(question, hidden, end=True)
-
-            j = [word_dict.START] + j + [word_dict.END]
-            j = torch.LongTensor(j).to(device)
-            answer = rnn(j, hidden, end=True)
-
-            result = clf(qust, answer)
-
-            loss = criterion(result.view(1), REAL_LABEL)
-            loss_t += loss
-            loss.backward()
-
-            rnn_optim.step()
-            clf_optim.step()
+        real = real.to(device)
+        results = [disc(ques, encd(real, hidden))]
 
         for j in fakes:
-            rnn_optim.zero_grad()
-            clf_optim.zero_grad()
+            j = j.to(device)
+            results.append(disc(ques, encd(j, hidden)))
 
-            qust = rnn(question, hidden, end=True)
-
-            j = [word_dict.START] + j + [word_dict.END]
-            j = torch.LongTensor(j).to(device)
-            answer = rnn(j, hidden, end=True)
-
-            result = clf(qust, answer)
-
-            loss = criterion(result.view(1), FAKE_LABEL)
-            loss_t += loss
-            loss.backward()
-
-            rnn_optim.step()
-            clf_optim.step()
-        
-        '''
-        if len(reals):
-            real_loss /= len(reals)
-        if len(fakes):
-            fake_loss /= len(fakes)
-
-        loss = real_loss + fake_loss
+        loss = disc.loss(torch.cat(results, 1), LABEL)
         loss.backward()
-        optimizer.step()
-        '''
-        item_c += len(reals) + len(fakes)
+        encd_optim.step()
+        disc_optim.step()
+        loss_t += loss
 
-        if i % 30 == 0:
-            print(i, loss_t.item() / item_c)
+        if i % 200 == 199:
+            print('{}\t{:.8f}\t{:.1f}%'.format(i+1, loss_t.item()/200,
+                                               (i+1)*100/len(dataloader)))
             loss_t = 0
-            item_c = 0
+        if i % 2000 == 1999:
+            predict(200)
 
 
-for i in range(5):
-    train_epoch()
-    torch.save(rnn.state_dict(), 'rnn.pth')
+def train(from_version=1, epoches=50):
+    global encd, disc, encd_optim, disc_optim
+    encd = SentenceEncoder(len(dictionary), VEC_SIZE).load(
+        '.', from_version, device)
+    disc = Discriminator(VEC_SIZE).load('.', from_version, device)
+    encd_optim = optim.SGD(encd.parameters(), lr=lr)
+    disc_optim = optim.Adam(disc.parameters(), lr=lr, betas=betas)
+    for i in range(epoches):
+        train_epoch()
+        encd.save('.', i+from_version)
+        disc.save('.', i+from_version)
+
+
+def pretrain(from_version=1, epoches=50):
+    global encd, clsf, encd_optim, clsf_optim
+    encd = SentenceEncoder(len(dictionary), VEC_SIZE).load(
+        '.', from_version, device)
+    clsf = Classifier(VEC_SIZE, dataset.CATAGORIES).load(
+        '.', from_version, device)
+    encd_optim = optim.SGD(encd.parameters(), lr=lr)
+    clsf_optim = optim.Adam(clsf.parameters(), lr=lr, betas=betas)
+    for i in range(epoches):
+        train_epoch()
+        encd.save('.', i+from_version)
+        clsf.save('.', i+from_version)
+    pass
+
+
+def test_input():
+    while True:
+        sent = input('sent2vec> ')
+        sent = dictionary[sent]
+        sent = torch.LongTensor(sent)
+        with torch.no_grad():
+            result = encd(sent, hidden)
+        result = np.array(result).reshape(8, 16)*255
+        img = Image.fromarray(result.astype(np.uint8))
+        img = img.resize((128, 64))
+        img.show()
+
+
+train()
