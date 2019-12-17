@@ -18,3 +18,6 @@ https://ieeexplore.ieee.org/stamp/stamp.jsp?tp=&arnumber=8602972
 
 4. thredshold
 在stackoverflow看到的，大概是控制概率输出的范围？？？
+
+## 最新训练曲线
+![](images/loss_curve.png)
