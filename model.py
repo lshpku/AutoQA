@@ -72,7 +72,7 @@ class Discriminator(BasicModel):
         for i in range(1, N):
             att_weight = torch.cat([att_weight, att_weight_list[i]], dim = 1)
         att_weight = F.softmax(att_weight, dim=1)
-        ques_vector = torch.matmul(att_weight, output)
+        ques_vector = torch.matmul(att_weight, output.squeeze(1))
         '''
         ques = ques_vector.repeat(answ.size()[0], 1, 1)
         output, _ = self.a_gru(torch.cat((answ, ques), 2), hidden)
