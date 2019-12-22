@@ -44,6 +44,10 @@ class Discriminator(BasicModel):
     def __init__(self, vec_size: int):
         super().__init__('disc')
         self.q_gru = nn.GRU(vec_size, vec_size)
+        '''
+        self.attentionW = nn.Parameter(torch.randn(size=(vec_size, vec_size)))
+        self.attentionV = nn.Parameter(torch.randn(size=(vec_size, 1)))
+        '''
         self.a_gru = nn.GRU(vec_size*2, vec_size)
         self.linear = nn.Sequential(
             nn.Linear(vec_size, vec_size//2),
@@ -53,7 +57,22 @@ class Discriminator(BasicModel):
 
     def forward(self, ques, answ, hidden):
         output, _ = self.q_gru(ques, hidden)
-        ques = output[-1].repeat(answ.size()[0], 1, 1)
+        x = output[-1]
+        '''
+        att_weight_list = []
+        N = output.size()[0]
+        for i in range(N):
+            x = torch.mm(output[i], self.attentionW)
+            x = F.tanh(x)
+            x = torch.mm(x, self.attentionV)
+            att_weight_list.append(x.squeeze(0))
+        att_weight = att_weight_list[0]
+        for i in range(1, N):
+            att_weight = torch.cat([att_weight, att_weight_list[i]], dim = 1)
+        att_weight = F.softmax(att_weight, dim=1)
+        x = torch.matmul(att_weight, output)
+        '''
+        ques = x.repeat(answ.size()[0], 1, 1)
         output, _ = self.a_gru(torch.cat((answ, ques), 2), hidden)
         result = self.linear(output[-1])
         return result
