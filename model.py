@@ -64,6 +64,7 @@ class Discriminator(BasicModel):
         att_weight_list = []
         N = output.size()[0]
         for i in range(N):
+            x = output[i].unsqueeze(0)
             x = torch.mm(output[i], self.attentionW)
             x = F.tanh(x)
             x = torch.mm(x, self.attentionV)
@@ -72,7 +73,7 @@ class Discriminator(BasicModel):
         for i in range(1, N):
             att_weight = torch.cat([att_weight, att_weight_list[i]], dim = 1)
         att_weight = F.softmax(att_weight, dim=1)
-        ques_vector = torch.matmul(att_weight, output.squeeze(1))
+        ques_vector = torch.matmul(att_weight, output)
         '''
         ques = ques_vector.repeat(answ.size()[0], 1, 1)
         output, _ = self.a_gru(torch.cat((answ, ques), 2), hidden)
